@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>game-2048-ai · 2048 与最佳方向提示</title>
+<style>
+  body { font-family:-apple-system,"PingFang SC",sans-serif; background:#faf8ef; margin:0; padding:24px; color:#776e65; }
+  h1 { margin:0; font-size:28px; }
+  .bar { display:flex; gap:16px; align-items:center; margin:12px 0; }
+  .box { background:#bbada0; color:#fff; border-radius:6px; padding:8px 16px; font-size:14px; }
+  #board { display:grid; grid-template-columns:repeat(4,90px); grid-template-rows:repeat(4,90px); gap:8px; background:#bbada0; padding:8px; border-radius:8px; width:fit-content; }
+  .cell { background:#cdc1b4; border-radius:5px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:bold; }
+  button { background:#8f7a66; color:#fff; border:none; border-radius:6px; padding:9px 16px; font-size:14px; cursor:pointer; }
+  #hint { margin-top:12px; font-size:15px; }
+</style>
+</head>
+<body>
+  <h1>2048</h1>
+  <div class="bar">
+    <div class="box">分数 <b id="score">0</b></div>
+    <button onclick="restart()">重开</button>
+    <button onclick="showHint()" class="ghost">最佳方向提示</button>
+  </div>
+  <div id="board"></div>
+  <div id="hint">用方向键 / WASD 移动。</div>
+
+<!-- GAME_LOGIC_BEGIN -->
+<script>
+// ===== 纯函数：2048 核心（被 Node 测试提取并断言）=====
+function slideLeft(row) {
+  // 一行向左滑动合并，返回 { row, gained, moved }
+  const nums = row.filter(v => v);
+  const out = [];
+  let gained = 0;
+  for (let i = 0; i < nums.length; i++) {
+    if (i + 1 < nums.length && nums[i] === nums[i + 1]) {
+      const merged = nums[i] * 2;
+      out.push(merged); gained += merged; i++;
+    } else {
+      out.push(nums[i]);
+    }
+  }
+  while (out.length < row.length) out.push(0);
+  const moved = out.some((v, i) => v !== row[i]);
+  return { row: out, gained, moved };
+}
+
+function moveGrid(grid, dir) {
+  // dir: left/right/up/down；返回 { grid, gained, moved }
+  const n = grid.length;
+  let g = grid.map(r => r.slice());
+  let gained = 0, moved = false;
+  const apply = (row) => {
+    const res = slideLeft(row);
+    gained += res.gained; if (res.moved) moved = true;
+    return res.row;
+  };
+  if (dir === "left") {
+    g = g.map(r => apply(r));
+  } else if (dir === "right") {
+    g = g.map(r => apply(r.slice().reverse()).reverse());
+  } else if (dir === "up") {
+    for (let c = 0; c < n; c++) {
+      const col = g.map(r => r[c]);
+      const res = apply(col);
+      res.forEach((v, i) => g[i][c] = v);
+    }
+  } else if (dir === "down") {
+    for (let c = 0; c < n; c++) {
+      const col = g.map(r => r[c]).reverse();
+      const res = apply(col).reverse();
+      res.forEach((v, i) => g[i][c] = v);
+    }
+  }
+  return { grid: g, gained, moved };
+}
+
+function heuristic(grid) {
+  // 空位越多越好、最大块在角落更好、合并分高更好
+  let empty = 0, max = 0, sum = 0;
+  for (const row of grid) for (const v of row) {
+    if (v === 0) empty++;
+    else { max = Math.max(max, v); sum += v; }
+  }
+  const cornerBonus = (grid[0][0] === max || grid[0][3] === max ||
+                       grid[3][0] === max || grid[3][3] === max) ? max : 0;
+  return empty * 10 + cornerBonus + sum * 0.1;
+}
+
+function bestMove(grid) {
+  // 1-ply：对四个方向评估，选启发分最高且可移动的方向。
+  const dirs = ["left", "right", "up", "down"];
+  let best = null, bestScore = -Infinity;
+  for (const d of dirs) {
+    const res = moveGrid(grid, d);
+    if (!res.moved) continue;
+    const s = res.gained * 5 + heuristic(res.grid);
+    if (s > bestScore) { bestScore = s; best = d; }
+  }
+  return best;
+}
+// ===== GAME_LOGIC_END =====
+
+let grid = [], score = 0;
+const DIRS = { ArrowLeft:"left", ArrowRight:"right", ArrowUp:"up", ArrowDown:"down",
+               a:"left", d:"right", w:"up", s:"down" };
+
+function spawn() {
+  const empty = [];
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) if (!grid[r][c]) empty.push([r,c]);
+  if (!empty.length) return;
+  const [r,c] = empty[Math.floor(Math.random()*empty.length)];
+  grid[r][c] = Math.random() < 0.9 ? 2 : 4;
+}
+
+function restart() {
+  grid = Array.from({length:4}, () => Array(4).fill(0));
+  score = 0;
+  spawn(); spawn();
+  render();
+  document.getElementById("hint").textContent = "用方向键 / WASD 移动。";
+}
+
+function render() {
+  const b = document.getElementById("board");
+  b.innerHTML = "";
+  for (const row of grid) for (const v of row) {
+    const d = document.createElement("div");
+    d.className = "cell"; d.textContent = v || "";
+    if (v) d.style.background = v >= 128 ? "#edc22e" : "#eee4da";
+    b.appendChild(d);
+  }
+  document.getElementById("score").textContent = score;
+}
+
+function doMove(dir) {
+  const res = moveGrid(grid, dir);
+  if (!res.moved) return;
+  grid = res.grid; score += res.gained;
+  spawn(); render();
+}
+
+document.addEventListener("keydown", e => {
+  const dir = DIRS[e.key] || DIRS[e.key.toLowerCase()];
+  if (dir) { e.preventDefault(); doMove(dir); }
+});
+
+function showHint() {
+  const d = bestMove(grid);
+  document.getElementById("hint").textContent = d ? `建议方向：${d}` : "无可用移动。";
+}
+
+restart();
+</script>
+</body>
+</html>
